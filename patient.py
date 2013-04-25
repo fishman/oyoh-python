@@ -23,17 +23,20 @@ oauth = OAuth()
 oyoh = oauth.remote_app('oyoh',
     # unless absolute urls are used to make requests, this will be added
     # before all URLs. This is also true for request_token_url and others.
-    base_url='http://localhost:3000/api/v1/',
+    base_url='https://cajuncodefest.dhh.la.gov/api/v1/',
     # where flask should look for new request tokens
     request_token_url=None,
     # where flask should exchange the token with the remote application
-    access_token_url='http://localhost:3000/oauth/access_token',
+    # access_token_url='https://cajuncodefest.dhh.la.gov/oauth/token',
+    access_token_url='https://cajuncodefest.dhh.la.gov/oauth/token',
+    access_token_method='POST',
     request_token_params={'response_type': 'code'},
+    access_token_params={'grant_type': 'authorization_code'},
     # oyoh knows two authorizatiom URLs. /authorize and /authenticate.
     # they mostly work the same, but for sign on /authenticate is
     # expected because this will give the user a slightly different
     # user interface on the oyoh side.
-    authorize_url='http://localhost:3000/oauth/authorize',
+    authorize_url='https://cajuncodefest.dhh.la.gov/oauth/authorize',
     # the consumer keys from the oyoh application registry.
     consumer_key='c7222ef96c60119bbf2b394a7c460a56a13c4e5b01ab9a394d63fb1c23106f65',
     consumer_secret='bc2180403617de236264a08039948ccff00f130468d6c896ef64d10dae0d4754'
@@ -55,7 +58,9 @@ def init_db():
 class User(Base):
     __tablename__ = 'users'
     id = Column('user_id', Integer, primary_key=True)
-    name = Column(String(60))
+    first_name = Column(String(60))
+    last_name = Column(String(60))
+    patient_id = Column(String(60))
     oauth_token = Column(String(200))
     oauth_secret = Column(String(200))
 
@@ -85,22 +90,43 @@ function has to return the token and secret. If you don't want
 to store this in the database, consider putting it into the
 session instead.
 """
-    user = g.user
-    if user is not None:
-        return user.oauth_token, user.oauth_secret
+    return session.get('access_token')
+    # user = g.user
+    # if user is not None:
+        # return user.oauth_token, user.oauth_secret
+
+
+def get_json(method):
+    access_token = session.get('access_token')
+    if access_token is None:
+        return redirect(url_for('login'))
+
+    access_token = access_token[0]
+    from urllib2 import Request, urlopen, URLError
+
+    headers = {'Authorization': 'Bearer '+access_token}
+    req = Request('https://cajuncodefest.dhh.la.gov/api/v1/' + method + '.json',
+                  None, headers)
+    try:
+        res = urlopen(req)
+    except URLError, e:
+        if e.code == 401:
+            # Unauthorized - bad token
+            return None
+        return res.read()
+
+    return res.read()
 
 
 @app.route('/')
 def index():
-    claims = None
-    if g.user is not None:
-        resp = oyoh.get('claims.json')
-        if resp.status == 200:
-            claims = resp.data
-        else:
-            flash('Unable to load claims from oyoh. Maybe out of '
-                  'API calls or oyoh is overloaded.')
-    return render_template('index.html', claims=claims)
+    res = get_json('me')
+    if res is not None:
+        return res
+    else:
+        session.pop('access_token', None)
+        return redirect(url_for('login'))
+
 
 
 @app.route('/login')
@@ -109,9 +135,9 @@ def login():
 in. When all worked out as expected, the remote application will
 redirect back to the callback URL provided.
 """
-    return oyoh.authorize(callback='http://localhost:5000/oauth_authorized')
-    # return oyoh.authorize(callback=url_for('http://localhost:5000/oauth_authorized',
-        # next=request.args.get('next') or request.referrer or None))
+    return oyoh.authorize(callback='http://localhost:5000/oauth-authorized')
+    # return oyoh.authorize(callback=url_for('oauth_authorized',
+    #     next=request.args.get('next') or request.referrer or None))
 
 
 @app.route('/logout')
@@ -142,7 +168,14 @@ redirect back unless the user clicks on the application name.
         flash(u'You denied the request to sign in.')
         return redirect(next_url)
 
-    user = User.query.filter_by(name=resp['screen_name']).first()
+    access_token = resp['access_token']
+    session['access_token'] = access_token, ''
+
+    me = oyoh.get('/me')
+
+    return redirect(url_for('index'))
+
+    user = User.query.filter_by(id=resp['user_id']).first()
 
     # user never signed on
     if user is None:
@@ -157,7 +190,7 @@ redirect back unless the user clicks on the application name.
     db_session.commit()
 
     session['user_id'] = user.id
-    flash('You were signed in')
+    # flash('You were signed in')
     return redirect(next_url)
 
 
